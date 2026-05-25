@@ -2,14 +2,11 @@
 set -Eeuo pipefail
 
 # ------------------------------------------------------------------------------
-# DEBUG MODE (0 = off, 1 = on)
+# DEBUG MODE
 # ------------------------------------------------------------------------------
 DEBUG=0
 [[ "$DEBUG" == "1" ]] && set -x
 
-# ------------------------------------------------------------------------------
-# ERROR HANDLER
-# ------------------------------------------------------------------------------
 trap 'echo -e "\n❌ ERROR at line $LINENO → $BASH_COMMAND\n"' ERR
 
 # ------------------------------------------------------------------------------
@@ -28,7 +25,7 @@ warn(){ echo -e "${YELLOW}⚠️  $*${RESET}"; }
 err() { echo -e "${RED}❌ $*${RESET}"; }
 
 # ------------------------------------------------------------------------------
-# SAFE INPUT (fixes infinite loop + curl issue)
+# INPUT (safe for curl)
 # ------------------------------------------------------------------------------
 read_input() {
   local prompt="$1"
@@ -43,11 +40,17 @@ read_input() {
 # ------------------------------------------------------------------------------
 # VALIDATION
 # ------------------------------------------------------------------------------
-validate_repo() {
+validate_ssh_repo() {
   local url="$1"
+
+  if [[ ! "$url" =~ ^git@github.com: ]]; then
+    err "Must use SSH format → git@github.com:user/repo.git"
+    return 1
+  fi
+
   if ! git ls-remote "$url" &>/dev/null; then
     err "Cannot access repo → $url"
-    err "Check: exists / public / correct URL / permissions"
+    err "Check: SSH key / repo exists / permissions"
     return 1
   fi
 }
@@ -56,23 +59,32 @@ validate_project_name() {
   [[ "$1" =~ ^[a-z][a-z0-9_]*$ ]] || return 1
 }
 
+check_ssh_auth() {
+  log "Checking SSH connection to GitHub..."
+  if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    warn "SSH not fully verified. Make sure your key is added to GitHub."
+  else
+    ok "SSH connection OK"
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # MAIN
 # ------------------------------------------------------------------------------
 main() {
 
   clear
-  echo -e "${BOLD}🚀 Flutter Project Initializer${RESET}"
+  echo -e "${BOLD}🚀 Flutter Project Initializer (SSH Mode)${RESET}"
   printf '=%.0s' {1..50}; echo ""
 
   # ------------------------------------------------------------------------------
   # INPUT
   # ------------------------------------------------------------------------------
-  BASE_REPO=$(read_input "📦 Base Template Repo URL: ")
+  BASE_REPO=$(read_input "📦 Base Template Repo (SSH): ")
   PROJECT_NAME=$(read_input "📦 Project Name (snake_case): ")
   APP_NAME=$(read_input "📱 App Name: ")
-  BUNDLE_ID=$(read_input "🆔 Bundle ID (com.company.app): ")
-  TARGET_REPO=$(read_input "🔗 Target Repo URL: ")
+  BUNDLE_ID=$(read_input "🆔 Bundle ID: ")
+  TARGET_REPO=$(read_input "🔗 Target Repo (SSH): ")
   FVM_VERSION=$(read_input "🧩 Flutter Version: ")
 
   # ------------------------------------------------------------------------------
@@ -81,29 +93,30 @@ main() {
   log "Validating inputs..."
 
   validate_project_name "$PROJECT_NAME" || {
-    err "Invalid project name"
+    err "Invalid project name (use snake_case)"
     exit 1
   }
 
-  validate_repo "$BASE_REPO" || exit 1
-  validate_repo "$TARGET_REPO" || {
+  check_ssh_auth
+
+  validate_ssh_repo "$BASE_REPO" || exit 1
+
+  # Target repo might be empty → don't hard fail
+  if ! git ls-remote "$TARGET_REPO" &>/dev/null; then
     warn "Target repo might be empty or not created yet"
-  }
+  fi
 
   ok "Inputs validated"
 
   # ------------------------------------------------------------------------------
-  # SUMMARY
+  # CONFIRM
   # ------------------------------------------------------------------------------
   echo ""
-  echo -e "${YELLOW}CONFIRMATION${RESET}"
+  echo -e "${YELLOW}CONFIRM${RESET}"
   printf '%.0s─' {1..40}; echo ""
   echo "Base Repo   : $BASE_REPO"
   echo "Project     : $PROJECT_NAME"
-  echo "App Name    : $APP_NAME"
-  echo "Bundle ID   : $BUNDLE_ID"
   echo "Target Repo : $TARGET_REPO"
-  echo "Flutter     : $FVM_VERSION"
   printf '%.0s─' {1..40}; echo ""
 
   confirm=$(read_input "Continue? (y/n): ")
@@ -116,27 +129,27 @@ main() {
   rm -rf "$WORK_DIR"
 
   # ------------------------------------------------------------------------------
-  # STEP 1: CLONE BASE TEMPLATE
+  # STEP 1: CLONE BASE
   # ------------------------------------------------------------------------------
   log "Cloning base project..."
   git clone --depth=1 "$BASE_REPO" "$WORK_DIR" || {
-    err "Failed to clone base repo"
+    err "Clone failed"
     exit 1
   }
-  ok "Base project cloned"
+  ok "Cloned successfully"
 
   cd "$WORK_DIR"
 
   # ------------------------------------------------------------------------------
-  # STEP 2: REMOVE OLD GIT
+  # STEP 2: RESET GIT
   # ------------------------------------------------------------------------------
-  log "Cleaning git history..."
+  log "Resetting git history..."
   rm -rf .git
 
   # ------------------------------------------------------------------------------
-  # STEP 3: RENAME PROJECT
+  # STEP 3: UPDATE PROJECT
   # ------------------------------------------------------------------------------
-  log "Updating project configuration..."
+  log "Updating project..."
 
   if [[ -f pubspec.yaml ]]; then
     if sed --version &>/dev/null 2>&1; then
@@ -144,13 +157,13 @@ main() {
     else
       sed -i '' "s/^name:.*/name: ${PROJECT_NAME}/" pubspec.yaml
     fi
-    ok "pubspec updated"
+    ok "Updated pubspec"
   else
     warn "pubspec.yaml not found"
   fi
 
   # ------------------------------------------------------------------------------
-  # STEP 4: FVM SETUP (OPTIONAL SAFE)
+  # STEP 4: FVM SETUP
   # ------------------------------------------------------------------------------
   log "Setting Flutter version..."
 
@@ -163,7 +176,7 @@ main() {
   fi
 
   # ------------------------------------------------------------------------------
-  # STEP 5: PUSH TO TARGET REPO
+  # STEP 5: PUSH
   # ------------------------------------------------------------------------------
   log "Pushing to target repo..."
 
@@ -174,21 +187,15 @@ main() {
   git remote add origin "$TARGET_REPO"
 
   git push -u origin main || {
-    err "Push failed → check repo exists & permissions"
+    err "Push failed → check SSH access & repo exists"
     exit 1
   }
 
-  ok "Project pushed successfully 🎉"
+  ok "🎉 Project pushed successfully!"
 
-  # ------------------------------------------------------------------------------
-  # DONE
-  # ------------------------------------------------------------------------------
-  echo ""
-  echo -e "${GREEN}🚀 DONE!${RESET}"
   echo ""
   echo "Clone your project:"
   echo "git clone $TARGET_REPO"
-  echo ""
 }
 
 main
